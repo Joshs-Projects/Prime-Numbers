@@ -1,0 +1,2 @@
+It took 64 seconds to calculate all primes up to 500000 using a do while loop with threads.
+It took 27 seconds to calculate all primes up to 500000 using a do while loop.
