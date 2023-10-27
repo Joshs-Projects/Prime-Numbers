@@ -1,122 +1,174 @@
 #include <iostream>
-#include <chrono>
-#include "TextFile.h"
-
+#include <syncstream>
 #include <vector>
 #include <thread>
+#include <mutex>
+#include <fstream>
+#include <condition_variable>
+#include <queue>
 
-bool FindIfPrimeFor(int number) {
-	bool prime = true;
-	for (int i = 2; i < number; i++) {
-		if (number % i == 0) {
-			prime = false;
-		}
-	}
-	return prime;
+#include <chrono>
+
+bool isPrime(unsigned long long n) { //Uses Primality Test
+    if (n <= 1) return false; //returns false since prime numbers are defined as integers greater than 1
+    if (n <= 3) return true; //returns true because 2 and 3 are prime numbers.
+    if (n % 2 == 0 || n % 3 == 0) return false; // returns false because prime numbers greater than 3 are not divisible by 2 or 3.
+
+
+    /*
+    The loop starts at i = 5 and iterates until i * i is less than or equal to n. This optimization reduces the number of iterations needed to check for divisors.
+
+    In each iteration, it checks if n is divisible by i or i + 2 (6k ± 1 for integer k) using the modulo operator. If it is divisible by either of these numbers, the function returns false.
+
+    If the loop completes without finding any divisors, the function returns true, indicating that the number is prime.
+    */
+    for (unsigned long long i = 5; i * i <= n; i += 6) {
+        if (n % i == 0 || n % (i + 2) == 0) return false;
+    }
+
+    return true;
 }
 
-bool FindIfPrimeDoWhile(int number) {
-	bool prime = true;
-	int i = 2;
-	do {
+/*void findPrimes(std::vector<int>& primes, int upperLimit, std::mutex& mtx) {
+    for (int num = 2; num <= upperLimit; ++num) {
+        bool is_num_prime = isPrime(num);
 
-		if (number % i == 0) {
-			prime = false;
-		}
-		i = i + 1;
+        if (is_num_prime) {
+            std::lock_guard<std::mutex> lock(mtx);
+            primes.push_back(num);
+        }
+    }
+}*/
 
-	} while (prime != false && i < number);
+std::mutex coutMutex;
 
-	return prime;
+void findPrimes(std::vector<unsigned long long>& primes, unsigned long long upperLimit, std::mutex& mtx, std::queue<unsigned long long>& taskQueue, std::condition_variable& cv) {
+    while (true) {
+        unsigned long long num;
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [&taskQueue] { return !taskQueue.empty(); });
+            num = taskQueue.front();
+            taskQueue.pop();
+        }
+
+        if (num == -1) {
+            std::unique_lock<std::mutex> lock(coutMutex); // Lock the mutex
+            std::cout << "Thread ID: " << std::this_thread::get_id() << " finishing." << std::endl;
+            // This is a signal to exit the thread
+            break;
+        }
+
+        bool is_num_prime = isPrime(num);
+
+        if (is_num_prime) {
+            std::lock_guard<std::mutex> lock(mtx);
+            primes.push_back(num);
+        }
+    }
 }
 
+bool isNumberPrime(unsigned long long number, const std::vector<unsigned long long>& primes) {
+    for (unsigned long long prime : primes) {
+        if (number == prime) {
+            return true;
+        }
+        if (number % prime == 0) {
+            return false;
+        }
+    }
+    return true;
+}
 
-bool FindIfPrimeDoWhileThreads(int startNumber, int endNumber) {
-	bool prime = true;
-	int i = 2;
-	for (int q = startNumber; q <= endNumber; q++) {
-		i = 2;
-		do {
+void savePrimesToCSV(std::vector<unsigned long long>& primes, std::mutex& mtx, std::condition_variable& cv, bool& shouldExit) {
+    std::ofstream outputFile("primes.csv");
+    if (outputFile.is_open()) {
+        while (true) {
+            std::vector<unsigned long long> primesToSave;
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                cv.wait(lock, [&primes, &primesToSave, &shouldExit] { return !primes.empty() || shouldExit; });
+                if (!primes.empty()) {
+                    primesToSave = primes;
+                    primes.clear();
+                }
+            }
 
-			if (startNumber % i == 0) {
-				prime = false;
-			}
-			i = i + 1;
+            for (unsigned long long prime : primesToSave) {
+                outputFile << prime << "\n";
+            }
+            outputFile.flush();
 
-		} while (prime != false && i < startNumber);
-
-		if (prime == true) {
-			std::cout << startNumber << " is a prime number." << std::endl;
-		}
-	}
-	return prime;
+            if (shouldExit) {
+                break;
+            }
+        }
+        outputFile.close();
+    }
+    else {
+        std::cerr << "Error: Unable to open the CSV file for writing." << std::endl;
+    }
 }
 
 int main() {
-	const int max = UINT_MAX; //set to UINT_MAX if you want to get to the biggest unsigned integer
-	TextFile results;
-	results.SetFileName("Results");
+    unsigned long long lowerLimit = UINT16_MAX;
+    unsigned long long upperLimit = UINT32_MAX;
+    int numThreads = 8;
+    bool shouldExit = false;  // Flag to signal the save thread to exit
 
-	const int numOfThreads = 100;
-	std::thread threads[numOfThreads];
-	
-	int howManyNumbersPerThread = 10;
+    std::vector<unsigned long long> primes;
+    std::mutex mtx;
+    std::queue<unsigned long long> taskQueue;
+    std::condition_variable cv;
 
-	unsigned int count = 1;
-	auto start = std::chrono::steady_clock::now();
-	while (true && count <= max) {
-		/*count = count + 1;
-		if (FindIfPrimeDoWhile(count)) {
-			std::cout << count << " is a prime number." << std::endl;
-		}*/
-		for (int i = 0; i < numOfThreads; i++) {
-			threads[i] = std::thread(FindIfPrimeDoWhileThreads, count, count + howManyNumbersPerThread);
-			count = count + 1 + howManyNumbersPerThread;
-		}
+    std::vector<std::thread> threads;
 
-		for (int i = 0; i < numOfThreads; i++) {
-			threads[i].join();
-		}
-	}
-	
-	auto end = std::chrono::steady_clock::now();
+    // Start the threads
+    for (int i = 0; i < numThreads; i++) {
+        threads.emplace_back(findPrimes, std::ref(primes), upperLimit, std::ref(mtx), std::ref(taskQueue), std::ref(cv));
+    }
 
-	std::cout << "It took " << std::chrono::duration_cast<std::chrono::seconds>(end - start).count() << " seconds to calculate all primes up to " << max << " using a do while loop with threads." << std::endl;
-	results.addLine("It took " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(end - start).count()) + " seconds to calculate all primes up to " + std::to_string(max) + " using a do while loop with threads.");
-	results.WriteTextFile();
+    // Create and start the thread for saving primes
+    std::thread saveThread(savePrimesToCSV, std::ref(primes), std::ref(mtx), std::ref(cv), std::ref(shouldExit));
 
+    // Enqueue tasks for the threads
+    for (unsigned long long num = 2; num <= upperLimit; ++num) {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            taskQueue.push(num);
+        }
+        cv.notify_one();
+    }
 
-	count = 0;
-	start = std::chrono::steady_clock::now();
-	while (true && count <= max) {
-		count = count + 1;
-		if (FindIfPrimeDoWhile(count)) {
-			std::cout << count << " is a prime number." << std::endl;
-		}
-	}
-	end = std::chrono::steady_clock::now();
+    // Add termination signal to the task queue
+    for (int i = 0; i < numThreads; i++) {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            taskQueue.push(-1);
+        }
+        cv.notify_one();
+    }
 
-	std::cout << "It took " << std::chrono::duration_cast<std::chrono::seconds>(end - start).count() << " seconds to calculate all primes up to " << max << " using a do while loop." << std::endl;
-	results.addLine("It took " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(end - start).count()) + " seconds to calculate all primes up to " + std::to_string(max) + " using a do while loop.");
-	results.WriteTextFile();
+    // Wait for all threads to finish
+    for (std::thread& t : threads) {
+        t.join();
+    }
 
-	/*count = 0;
-	start = std::chrono::steady_clock::now();
-	while (true && count <= max) {
-		count = count + 1;
-		if (FindIfPrimeFor(count)) {
-			std::cout << count << " is a prime number." << std::endl;
-		}
-	}
-	end = std::chrono::steady_clock::now();
+    // Signal the save thread to exit
+    shouldExit = true;
+    cv.notify_one();
 
-	std::cout << "It took " << std::chrono::duration_cast<std::chrono::seconds>(end - start).count() << " seconds to calculate all primes up to " << max << " using a for loop." << std::endl;
-	results.addLine("It took " + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(end - start).count()) + " seconds to calculate all primes up to " + std::to_string(max) + " using a for loop.");
-	
+    // Wait for the save thread to finish
+    saveThread.join();
 
+    unsigned long long numberToCheck = 37;
 
+    if (isNumberPrime(numberToCheck, primes)) {
+        std::cout << numberToCheck << " is a prime number." << std::endl;
+    }
+    else {
+        std::cout << numberToCheck << " is not a prime number." << std::endl;
+    }
 
-
-	results.WriteTextFile();*/
-
+    return 0;
 }
